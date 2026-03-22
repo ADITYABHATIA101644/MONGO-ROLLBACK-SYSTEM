@@ -1,73 +1,115 @@
+const express = require('express');
 const mongoose = require('mongoose');
 const { Account, Log } = require('./models');
 require('dotenv').config();
 
-async function transferMoney(fromId, toId, amount) {
-    // 1. Start the Session
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 1. Connect to MongoDB Atlas
+// Ensure your MONGO_URI in Render/Env ends with a database name like /bankDB
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log("✅ Connected to MongoDB Atlas"))
+    .catch(err => console.error("❌ Connection error:", err));
+
+app.use(express.json());
+
+// 2. Root Route (For Render health checks)
+app.get('/', (req, res) => {
+    res.send(`
+        <h1>Banking Transaction System (ACID)</h1>
+        <p>Status: Online</p>
+        <ul>
+            <li><a href="/seed">1. Seed Accounts (Run this first)</a></li>
+            <li><a href="/transfer">2. Run Experiment (Transfer $100)</a></li>
+            <li><a href="/logs">3. View Audit Logs</a></li>
+        </ul>
+    `);
+});
+
+// 3. Seed Route: Create Alice and Bob for testing
+app.get('/seed', async (req, res) => {
+    try {
+        await Account.deleteMany({}); // Clear old data
+        const alice = await Account.create({ name: "Alice", balance: 1000 });
+        const bob = await Account.create({ name: "Bob", balance: 500 });
+        res.json({ message: "Accounts Seeded!", alice, bob });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 4. MAIN EXPERIMENT: ACID Transaction with Rollback
+app.get('/transfer', async (req, res) => {
+    const amount = 100;
     const session = await mongoose.startSession();
     
     try {
-        // 2. Start the Transaction
         session.startTransaction();
+        console.log("--- Transaction Started ---");
 
-        console.log(`--- Starting Transaction: $${amount} ---`);
-
-        // 3. Deduct from Sender
+        // STEP A: Deduct from Alice
         const sender = await Account.findOneAndUpdate(
-            { _id: fromId, balance: { $gte: amount } },
+            { name: "Alice", balance: { $gte: amount } },
             { $inc: { balance: -amount } },
             { session, new: true }
         );
 
         if (!sender) {
-            throw new Error("Insufficient funds or sender not found");
+            throw new Error("Insufficient funds for Alice or account not found.");
         }
 
-        // 4. Add to Receiver
-        const receiver = await Account.findByIdAndUpdate(
-            toId,
+        // STEP B: Add to Bob
+        const receiver = await Account.findOneAndUpdate(
+            { name: "Bob" },
             { $inc: { balance: amount } },
             { session, new: true }
         );
 
         if (!receiver) {
-            throw new Error("Receiver account not found");
+            throw new Error("Receiver 'Bob' not found.");
         }
 
-        // 5. Log the Audit (Part of the same transaction)
-        await Log.create([{ from: fromId, to: toId, amount, status: 'SUCCESS' }], { session });
+        // STEP C: Log for Auditing (Part of the transaction)
+        await Log.create([{ 
+            from: sender._id, 
+            to: receiver._id, 
+            amount, 
+            status: 'SUCCESS' 
+        }], { session });
 
-        // 6. Commit the changes
+        // COMMIT: Finalize all changes
         await session.commitTransaction();
-        console.log("Transaction Committed Successfully.");
+        res.json({ 
+            status: "Success", 
+            message: `Transferred $${amount} from Alice to Bob`,
+            senderBalance: sender.balance,
+            receiverBalance: receiver.balance
+        });
 
     } catch (error) {
-        // 7. Rollback if anything goes wrong
-        console.error(`Transaction Failed: ${error.message}. Rolling back...`);
+        // ROLLBACK: If any step fails, undo everything
+        console.error("Critical Failure. Rolling back changes...");
         await session.abortTransaction();
-        
-        // Log the failure separately (optional, outside the main session)
-        await Log.create({ from: fromId, to: toId, amount, status: 'FAILED' });
+
+        // Log the failure (Outside the transaction so the log persists)
+        await Log.create({ amount, status: 'FAILED', error: error.message });
+
+        res.status(400).json({ 
+            status: "Transaction Rolled Back", 
+            reason: error.message 
+        });
     } finally {
-        // 8. End the session
         session.endSession();
     }
-}
+});
 
-async function run() {
-    await mongoose.connect(process.env.MONGO_URI);
-    
-    // Seed Data
-    const alice = await Account.create({ name: 'Alice', balance: 1000 });
-    const bob = await Account.create({ name: 'Bob', balance: 500 });
+// 5. View Logs
+app.get('/logs', async (req, res) => {
+    const logs = await Log.find().sort({ timestamp: -1 });
+    res.json(logs);
+});
 
-    // Test 1: Successful transfer
-    await transferMoney(alice._id, bob._id, 200);
-
-    // Test 2: Failed transfer (Insufficient funds)
-    await transferMoney(alice._id, bob._id, 2000);
-
-    process.exit();
-}
-
-run();
+app.listen(PORT, () => {
+    console.log(`🚀 Server running at http://localhost:${PORT}`);
+});
