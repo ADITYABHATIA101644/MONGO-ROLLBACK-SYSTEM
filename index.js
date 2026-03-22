@@ -6,49 +6,59 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 1. Connect to MongoDB Atlas
-// Ensure your MONGO_URI in Render/Env ends with a database name like /bankDB
-mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log("✅ Connected to MongoDB Atlas"))
-    .catch(err => console.error("❌ Connection error:", err));
+// 1. Database Connection
+// Uses Environment Variable for Render, fallback to your string for local testing
+const mongoURI = process.env.MONGO_URI || "mongodb+srv://Aditya:Aadi010.@cluster0.g0l9d0y.mongodb.net/bankDB?retryWrites=true&w=majority";
+
+mongoose.connect(mongoURI)
+    .then(() => console.log("✅ Database Connected Successfully - Developed by Aditya Bhatia"))
+    .catch(err => console.error("❌ MongoDB Connection Error:", err));
 
 app.use(express.json());
 
-// 2. Root Route (For Render health checks)
+// 2. Welcome Route
 app.get('/', (req, res) => {
     res.send(`
-        <h1>Banking Transaction System (ACID)</h1>
-        <p>Status: Online</p>
-        <ul>
-            <li><a href="/seed">1. Seed Accounts (Run this first)</a></li>
-            <li><a href="/transfer">2. Run Experiment (Transfer $100)</a></li>
-            <li><a href="/logs">3. View Audit Logs</a></li>
-        </ul>
+        <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+            <h1>Banking Transaction System (ACID)</h1>
+            <p>Developed by: <strong>Aditya Bhatia</strong></p>
+            <hr style="width: 50%;">
+            <nav>
+                <a href="/seed"><button style="padding: 10px;">1. Seed Accounts</button></a>
+                <a href="/transfer"><button style="padding: 10px;">2. Run Transfer ($100)</button></a>
+                <a href="/logs"><button style="padding: 10px;">3. View Logs</button></a>
+            </nav>
+        </div>
     `);
 });
 
-// 3. Seed Route: Create Alice and Bob for testing
+// 3. Seed Route: Initialize Alice and Bob
 app.get('/seed', async (req, res) => {
     try {
-        await Account.deleteMany({}); // Clear old data
+        await Account.deleteMany({}); // Reset for experiment
         const alice = await Account.create({ name: "Alice", balance: 1000 });
         const bob = await Account.create({ name: "Bob", balance: 500 });
-        res.json({ message: "Accounts Seeded!", alice, bob });
+        
+        console.log("System Seeded by Aditya Bhatia");
+        res.json({ 
+            message: "Accounts Initialized", 
+            accounts: [alice, bob] 
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// 4. MAIN EXPERIMENT: ACID Transaction with Rollback
+// 4. THE CORE EXPERIMENT: ACID Transaction Logic
 app.get('/transfer', async (req, res) => {
     const amount = 100;
     const session = await mongoose.startSession();
     
     try {
         session.startTransaction();
-        console.log("--- Transaction Started ---");
+        console.log("--- Transaction Started by Aditya Bhatia ---");
 
-        // STEP A: Deduct from Alice
+        // STEP 1: Deduct from Alice (Check balance first)
         const sender = await Account.findOneAndUpdate(
             { name: "Alice", balance: { $gte: amount } },
             { $inc: { balance: -amount } },
@@ -56,10 +66,10 @@ app.get('/transfer', async (req, res) => {
         );
 
         if (!sender) {
-            throw new Error("Insufficient funds for Alice or account not found.");
+            throw new Error("Insufficient funds: Alice cannot afford this transfer.");
         }
 
-        // STEP B: Add to Bob
+        // STEP 2: Add to Bob
         const receiver = await Account.findOneAndUpdate(
             { name: "Bob" },
             { $inc: { balance: amount } },
@@ -67,10 +77,10 @@ app.get('/transfer', async (req, res) => {
         );
 
         if (!receiver) {
-            throw new Error("Receiver 'Bob' not found.");
+            throw new Error("Recipient account 'Bob' was not found.");
         }
 
-        // STEP C: Log for Auditing (Part of the transaction)
+        // STEP 3: Audit Log (Inside Transaction)
         await Log.create([{ 
             from: sender._id, 
             to: receiver._id, 
@@ -78,38 +88,45 @@ app.get('/transfer', async (req, res) => {
             status: 'SUCCESS' 
         }], { session });
 
-        // COMMIT: Finalize all changes
+        // COMMIT: If we reached here, save all changes
         await session.commitTransaction();
+        
         res.json({ 
-            status: "Success", 
-            message: `Transferred $${amount} from Alice to Bob`,
-            senderBalance: sender.balance,
-            receiverBalance: receiver.balance
+            status: "Transaction Committed", 
+            developer: "Aditya Bhatia",
+            alice_new_balance: sender.balance,
+            bob_new_balance: receiver.balance
         });
 
     } catch (error) {
-        // ROLLBACK: If any step fails, undo everything
-        console.error("Critical Failure. Rolling back changes...");
+        // ROLLBACK: Undo everything if an error occurred
+        console.error("ALERT: Transaction Failed. Initiating Rollback...");
         await session.abortTransaction();
 
-        // Log the failure (Outside the transaction so the log persists)
+        // Log the failure outside the transaction session for auditing
         await Log.create({ amount, status: 'FAILED', error: error.message });
 
         res.status(400).json({ 
-            status: "Transaction Rolled Back", 
-            reason: error.message 
+            status: "Rollback Executed", 
+            reason: error.message,
+            integrity_check: "All balances remained unchanged."
         });
     } finally {
         session.endSession();
     }
 });
 
-// 5. View Logs
+// 5. View Logs Route
 app.get('/logs', async (req, res) => {
-    const logs = await Log.find().sort({ timestamp: -1 });
-    res.json(logs);
+    try {
+        const logs = await Log.find().sort({ timestamp: -1 });
+        res.json({ developer: "Aditya Bhatia", transaction_history: logs });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 Server running at http://localhost:${PORT}`);
+    console.log(`🚀 Server is live on port ${PORT}`);
+    console.log(`Visit: http://localhost:${PORT}`);
 });
